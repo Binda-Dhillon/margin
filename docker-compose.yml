@@ -1,0 +1,23 @@
+# Margin, self-hosted. Start with:  docker compose up -d --build
+# Everything Margin stores (accounts, every space's git repository) lives in
+# the margin-data volume. Back that volume up and you have backed up Margin.
+services:
+  margin:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8787}
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      ALLOW_SIGNUP: ${ALLOW_SIGNUP:-true}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+      MICROSOFT_TENANT_ID: ${MICROSOFT_TENANT_ID:-common}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+    volumes:
+      - margin-data:/data
+
+volumes:
+  margin-data:
