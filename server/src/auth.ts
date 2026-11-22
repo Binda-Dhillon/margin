@@ -17,6 +17,24 @@ const socialProviders: Record<string, unknown> = {};
 if (config.google) socialProviders.google = { ...config.google };
 if (config.microsoft) socialProviders.microsoft = { ...config.microsoft };
 
+/**
+ * The address the browser used to reach this server, so sign-in works from
+ * any machine that can reach it (a Tailscale IP or name, a LAN address)
+ * without listing each one in PUBLIC_URL or TRUSTED_ORIGINS.
+ *
+ * Better Auth's origin check stops other sites from posting to this one. A
+ * page on another site sends its own Origin, which will not match the Host it
+ * is posting to, so it is still refused.
+ */
+function sameOrigins(request?: Request): string[] {
+  if (!request) return [];
+  const hosts = [request.headers.get("x-forwarded-host"), request.headers.get("host")];
+  return hosts
+    .flatMap((h) => (h ? h.split(",").map((s) => s.trim()) : []))
+    .filter((h) => /^[A-Za-z0-9.\-:[\]]+$/.test(h))
+    .flatMap((h) => [`http://${h}`, `https://${h}`]);
+}
+
 let migrated = false;
 
 export const auth = betterAuth({
@@ -32,7 +50,9 @@ export const auth = betterAuth({
   baseURL: config.publicUrl,
   secret: config.secret,
   database: db,
-  trustedOrigins: [config.publicUrl, ...config.trustedOrigins],
+  trustedOrigins: (request) => [config.publicUrl, ...config.trustedOrigins, ...sameOrigins(request)],
+  // On by default except under a test runner; keep it on so tests cover it.
+  advanced: { disableOriginCheck: false },
   emailAndPassword: {
     enabled: true,
     minPasswordLength: 8,

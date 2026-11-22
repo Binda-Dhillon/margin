@@ -87,6 +87,15 @@ and `<PUBLIC_URL>/api/auth/callback/google`.
 Serve it over HTTPS (a reverse proxy such as Caddy in front) for anything
 beyond your own machine.
 
+Sign-in works from any address that reaches the server (a Tailscale IP or
+MagicDNS name, a LAN address) without adding it to `PUBLIC_URL`. Requests from
+other sites are still refused.
+
+If the project folder is synced between machines (Syncthing, OneDrive), leave
+`server/data` and `node_modules` out of the sync and run the server on one
+machine only. The database and repositories are written while the server
+runs, and a sync copying them mid-write can corrupt them.
+
 ## Backups
 
 Everything is in `DATA_DIR`: `margin.db` (accounts, groups, memberships) and

@@ -6,6 +6,7 @@ const run = promisify(execFile);
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { request as httpRequest } from "node:http";
 import type http from "node:http";
 
 const PORT = 18000 + Math.floor(Math.random() * 1000);
@@ -130,6 +131,32 @@ describe("accounts", () => {
     expect(res.status).toBe(200);
     const bad = await call(null, "POST", "/api/auth/sign-in/email", { email: "login@example.com", password: "nope-nope-1!" });
     expect(bad.status).toBe(401);
+  });
+
+  it("logs in from another machine's address but refuses other sites", async () => {
+    await signUp("Remote", "remote@example.com");
+    // fetch cannot set Host, so post as a browser on another machine would.
+    const signIn = (host: string, origin: string) =>
+      new Promise<number>((resolve, reject) => {
+        const body = JSON.stringify({ email: "remote@example.com", password: "correct-horse-7!" });
+        const req = httpRequest(
+          {
+            port: PORT,
+            path: "/api/auth/sign-in/email",
+            method: "POST",
+            headers: { Host: host, Origin: origin, "Content-Type": "application/json" },
+          },
+          (res) => {
+            res.resume();
+            resolve(res.statusCode ?? 0);
+          },
+        );
+        req.on("error", reject);
+        req.end(body);
+      });
+    expect(await signIn(`100.101.102.103:${PORT}`, `http://100.101.102.103:${PORT}`)).toBe(200);
+    expect(await signIn(`my-pc.tail1234.ts.net`, `https://my-pc.tail1234.ts.net`)).toBe(200);
+    expect(await signIn(`my-pc.tail1234.ts.net`, `https://evil.example`)).toBe(403);
   });
 
   it("requires a session for the API", async () => {
