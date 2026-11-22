@@ -363,6 +363,7 @@ describe("a member's folder", () => {
     ["one object of an unpushed commit", "a"],
     ["everything it downloaded", "b"],
     ["one object of its newest commit, with nothing else pending", "c"],
+    ["its newest commit itself", "d"],
   ])("repairs a copy that has lost %s, keeping this device's unsynced work", async (_label, k) => {
     const id = (n: number) => `r${k}${n}`;
     await a.write(PATHS.note(id(1)), note(id(1), "Discussion", "First point.\n", amara.author));
@@ -372,16 +373,18 @@ describe("a member's folder", () => {
     // Amara works offline: one committed note, one written but not committed,
     // and an edit to a note Sanjay is also changing.
     await a.write(PATHS.note(id(2)), note(id(2), "Limitations", "Small sample.\n", amara.author));
-    if (k !== "c") await a.commit("Offline work");
+    if (k !== "c" && k !== "d") await a.commit("Offline work");
     await a.write(PATHS.note(id(3)), note(id(3), "Future work", "Replicate.\n", amara.author));
     await a.write(PATHS.note(id(1)), note(id(1), "Discussion", "First point, said by Amara.\n", amara.author, { updated: "2026-11-04T12:00:00.000Z" }));
-    const local = k === "c" ? (await a.commit("Offline work"))! : await a.head();
+    const local = k === "c" || k === "d" ? (await a.commit("Offline work"))! : await a.head();
     await s.write(PATHS.note(id(1)), note(id(1), "Discussion", "First point, said by Sanjay.\n", sanjay.author, { updated: "2026-11-04T12:05:00.000Z" }));
     await s.write(PATHS.note(id(4)), note(id(4), "Abstract", "Summary.\n", sanjay.author));
     await s.sync();
 
     // Then part of Amara's copy goes missing, as when its files are changed underneath it.
-    if (k === "a" || k === "c") {
+    if (k === "d") {
+      fs.rmSync(path.join(a.dir, ".git", "objects", local.slice(0, 2), local.slice(2)));
+    } else if (k === "a" || k === "c") {
       const { commit } = await git.readCommit({ fs, dir: a.dir, oid: local });
       fs.rmSync(path.join(a.dir, ".git", "objects", commit.tree.slice(0, 2), commit.tree.slice(2)));
     } else {
