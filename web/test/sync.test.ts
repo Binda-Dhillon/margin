@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type http from "node:http";
+import git from "isomorphic-git";
 import gitHttp from "isomorphic-git/http/node";
 import { AccessError, OfflineError, SpaceRepo, type GitEnv } from "../src/core/repo";
 import { blankMeta, parseNoteFile, privateStub, serializeNoteFile } from "../src/core/notefile";
@@ -351,5 +352,61 @@ describe("a member's folder", () => {
     await tick();
     const got = await tabletRepo.sync();
     expect(got.changed).toEqual([PATHS.note("p9")]);
+  });
+
+  // Ways a copy can lose objects: one object of an unpushed commit, with edits
+  // still to commit (the first attempt merges, then fails at push); every
+  // object it downloaded (nothing readable, so the repair merges with no known
+  // starting point); or the tree of its newest commit with nothing else
+  // pending (the first attempt fetches, then fails before taking the changes).
+  it.each([
+    ["one object of an unpushed commit", "a"],
+    ["everything it downloaded", "b"],
+    ["one object of its newest commit, with nothing else pending", "c"],
+  ])("repairs a copy that has lost %s, keeping this device's unsynced work", async (_label, k) => {
+    const id = (n: number) => `r${k}${n}`;
+    await a.write(PATHS.note(id(1)), note(id(1), "Discussion", "First point.\n", amara.author));
+    await a.sync();
+    await s.sync();
+
+    // Amara works offline: one committed note, one written but not committed,
+    // and an edit to a note Sanjay is also changing.
+    await a.write(PATHS.note(id(2)), note(id(2), "Limitations", "Small sample.\n", amara.author));
+    if (k !== "c") await a.commit("Offline work");
+    await a.write(PATHS.note(id(3)), note(id(3), "Future work", "Replicate.\n", amara.author));
+    await a.write(PATHS.note(id(1)), note(id(1), "Discussion", "First point, said by Amara.\n", amara.author, { updated: "2026-11-04T12:00:00.000Z" }));
+    const local = k === "c" ? (await a.commit("Offline work"))! : await a.head();
+    await s.write(PATHS.note(id(1)), note(id(1), "Discussion", "First point, said by Sanjay.\n", sanjay.author, { updated: "2026-11-04T12:05:00.000Z" }));
+    await s.write(PATHS.note(id(4)), note(id(4), "Abstract", "Summary.\n", sanjay.author));
+    await s.sync();
+
+    // Then part of Amara's copy goes missing, as when its files are changed underneath it.
+    if (k === "a" || k === "c") {
+      const { commit } = await git.readCommit({ fs, dir: a.dir, oid: local });
+      fs.rmSync(path.join(a.dir, ".git", "objects", commit.tree.slice(0, 2), commit.tree.slice(2)));
+    } else {
+      fs.rmSync(path.join(a.dir, ".git", "objects", "pack"), { recursive: true });
+    }
+
+    const result = await a.sync();
+    expect(result.pushed).toBe(true);
+    expect(result.changed).toEqual(expect.arrayContaining([PATHS.note(id(4)), PATHS.conflictOf(PATHS.note(id(1)))]));
+    expect(result.conflicts).toEqual([PATHS.note(id(1))]);
+    expect(await a.read(PATHS.note(id(2)))).toContain("Small sample");
+    expect(await a.read(PATHS.note(id(3)))).toContain("Replicate");
+    expect(await a.read(PATHS.note(id(4)))).toContain("Summary");
+
+    // Sanjay receives everything Amara had, with both versions of the clash kept.
+    const back = await s.sync();
+    expect(back.changed).toEqual(expect.arrayContaining([PATHS.note(id(2)), PATHS.note(id(3)), PATHS.conflictOf(PATHS.note(id(1)))]));
+    const both = [await s.read(PATHS.note(id(1))), await s.read(PATHS.conflictOf(PATHS.note(id(1))))].join("\n");
+    expect(both).toContain("said by Amara");
+    expect(both).toContain("said by Sanjay");
+    expect(await s.read(PATHS.note(id(4)))).toContain("Summary");
+
+    // And Amara's repaired copy keeps syncing normally afterwards.
+    await a.write(PATHS.note(id(5)), note(id(5), "After", "Fine.\n", amara.author));
+    expect((await a.sync()).pushed).toBe(true);
+    expect((await s.sync()).changed).toEqual([PATHS.note(id(5))]);
   });
 });

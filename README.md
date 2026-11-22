@@ -140,6 +140,11 @@ different parts of one note, the changes are merged. If they changed the same
 lines, both versions are kept and the note is flagged for someone to choose.
 Drawings merge shape by shape and the board merges card by card.
 
+If a browser's copy loses git objects (for example because the server's data
+folder was changed underneath it by a sync tool), the next sync downloads a
+fresh copy and puts that browser's unsynced changes back on top, as a
+"Recover changes from this device" commit.
+
 ## Tests
 
 ```bash

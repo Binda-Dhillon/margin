@@ -67,6 +67,16 @@ function isMissing(err: unknown): boolean {
   return code === "ENOENT" || code === "NotFoundError" || code === "ENOTDIR";
 }
 
+/**
+ * isomorphic-git could not find a commit, tree or blob this copy refers to.
+ * The copy no longer lines up with itself or the server, and only a fresh
+ * download fixes it (see repairLocked).
+ */
+function isMissingObject(err: unknown): boolean {
+  const e = err as { code?: string; data?: { what?: string } };
+  return e?.code === "NotFoundError" && /^[0-9a-f]{40}$/.test(e.data?.what ?? "");
+}
+
 export class SpaceRepo {
   readonly dir: string;
   readonly url: string;
@@ -266,43 +276,63 @@ export class SpaceRepo {
    */
   sync(message = "Update notes"): Promise<SyncResult> {
     return this.run(async () => {
+      // Shared by both attempts: a first attempt can merge files into the
+      // folder before it fails, and the app must still hear about them.
       const result: SyncResult = { changed: [], conflicts: [], committed: null, pushed: false, head: "" };
-      result.committed = await this.commitLocked(message);
-      let recovered = false;
-      for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        return await this.syncLocked(message, result);
+      } catch (err) {
+        if (!isMissingObject(err)) throw err;
+        let repaired: { changed: string[]; conflicts: string[] };
         try {
-          const pulled = await this.pullLocked();
-          for (const p of pulled.changed) if (!result.changed.includes(p)) result.changed.push(p);
-          for (const p of pulled.conflicts) if (!result.conflicts.includes(p)) result.conflicts.push(p);
-        } catch (err) {
-          throw this.translate(err, result);
+          repaired = await this.repairLocked();
+        } catch (repairErr) {
+          if (repairErr instanceof OfflineError) repairErr.result = result;
+          throw repairErr;
         }
-        const local = await git.resolveRef({ ...this.base, ref: "refs/heads/main" });
-        const remote = await this.remoteHead();
-        result.head = local;
-        if (local === remote) break;
-        try {
-          const pushed = await git.push({ ...this.net, ref: "main", remoteRef: "main" });
-          if (pushed.ok) {
-            result.pushed = true;
-            break;
-          }
-        } catch (err) {
-          const code = (err as { code?: string }).code;
-          if (code === "PushRejectedError") continue; // someone pushed first: pull again
-          if (code === "GitPushError" && !recovered) {
-            // The server refused the change (a view-only shared note). Put
-            // those files back to the server's version and try once more.
-            recovered = true;
-            const reverted = await this.revertForeignShared();
-            for (const p of reverted) if (!result.changed.includes(p)) result.changed.push(p);
-            if (reverted.length) continue;
-          }
-          throw this.translate(err, result);
-        }
+        for (const p of repaired.changed) if (!result.changed.includes(p)) result.changed.push(p);
+        for (const p of repaired.conflicts) if (!result.conflicts.includes(p)) result.conflicts.push(p);
+        return await this.syncLocked(message, result);
       }
-      return result;
     });
+  }
+
+  private async syncLocked(message: string, result: SyncResult): Promise<SyncResult> {
+    result.committed = (await this.commitLocked(message)) ?? result.committed;
+    let recovered = false;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        const pulled = await this.pullLocked();
+        for (const p of pulled.changed) if (!result.changed.includes(p)) result.changed.push(p);
+        for (const p of pulled.conflicts) if (!result.conflicts.includes(p)) result.conflicts.push(p);
+      } catch (err) {
+        throw this.translate(err, result);
+      }
+      const local = await git.resolveRef({ ...this.base, ref: "refs/heads/main" });
+      const remote = await this.remoteHead();
+      result.head = local;
+      if (local === remote) break;
+      try {
+        const pushed = await git.push({ ...this.net, ref: "main", remoteRef: "main" });
+        if (pushed.ok) {
+          result.pushed = true;
+          break;
+        }
+      } catch (err) {
+        const code = (err as { code?: string }).code;
+        if (code === "PushRejectedError") continue; // someone pushed first: pull again
+        if (code === "GitPushError" && !recovered) {
+          // The server refused the change (a view-only shared note). Put
+          // those files back to the server's version and try once more.
+          recovered = true;
+          const reverted = await this.revertForeignShared();
+          for (const p of reverted) if (!result.changed.includes(p)) result.changed.push(p);
+          if (reverted.length) continue;
+        }
+        throw this.translate(err, result);
+      }
+    }
+    return result;
   }
 
   /** History of the space, newest first. */
@@ -487,6 +517,115 @@ export class SpaceRepo {
     } else {
       await git.add({ ...this.base, filepath: path });
     }
+  }
+
+  /** Every file in a working folder (not .git), as repo-relative path to text. */
+  private async readFolder(dir: string): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    const walk = async (rel: string) => {
+      const names: string[] = await this.pfs.readdir(rel ? `${dir}/${rel}` : dir);
+      for (const name of names) {
+        if (!rel && name === ".git") continue;
+        const child = rel ? `${rel}/${name}` : name;
+        const stat = await this.pfs.stat(`${dir}/${child}`);
+        if (stat.isDirectory()) await walk(child);
+        else out.set(child, (await this.pfs.readFile(`${dir}/${child}`, { encoding: "utf8" })) as string);
+      }
+    };
+    await walk("");
+    return out;
+  }
+
+  /**
+   * Where this copy and the server last agreed. Not the remote-tracking ref
+   * alone: a fetch moves that ahead before the folder has taken the changes.
+   */
+  private async lastSharedCommit(): Promise<string | null> {
+    try {
+      const local = await git.resolveRef({ ...this.base, ref: "refs/heads/main" });
+      const remote = await this.remoteHead();
+      if (!remote) return null;
+      const [shared] = (await git.findMergeBase({ ...this.base, oids: [local, remote] })) as string[];
+      return shared ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The files of a commit, or null if any part of it can no longer be read. */
+  private async filesAt(commitOid: string | null): Promise<Map<string, string> | null> {
+    if (!commitOid) return null;
+    try {
+      const out = new Map<string, string>();
+      for (const path of await git.listFiles({ ...this.base, ref: commitOid })) {
+        const { blob } = await git.readBlob({ ...this.base, oid: commitOid, filepath: path });
+        out.set(path, decoder.decode(blob));
+      }
+      return out;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * This copy refers to git objects it does not have, so it can no longer
+   * commit, pull or push. That happens when its files are changed underneath
+   * it, or the server's repository is swapped for another copy (a folder-sync
+   * tool such as Syncthing on the server's data folder does both).
+   *
+   * Download a fresh copy from the server, then lay this device's files back
+   * on top with the usual merge rules. The base for the merge is the last
+   * commit this copy and the server had in common, when that can still be
+   * read. Without it, a file only one side has is kept and a note that
+   * differs keeps both versions and is flagged, so nothing is lost.
+   * The old copy is kept aside until the new one holds everything.
+   */
+  private async repairLocked(): Promise<{ changed: string[]; conflicts: string[] }> {
+    const mine = await this.readFolder(this.dir);
+    const base = await this.filesAt(await this.lastSharedCommit());
+
+    const fresh = `${this.dir}.fresh`;
+    const aside = `${this.dir}.broken`;
+    await this.rmrf(fresh);
+    await this.mkdirp(fresh);
+    try {
+      await git.clone({ ...this.net, dir: fresh, ref: "main", singleBranch: true, noTags: true });
+    } catch (err) {
+      await this.rmrf(fresh).catch(() => undefined);
+      throw this.translate(err);
+    }
+    await this.rmrf(aside);
+    await this.pfs.rename(this.dir, aside);
+    await this.pfs.rename(fresh, this.dir);
+    await this.pfs.writeFile(`${this.dir}/.git/margin-cloned`, "1", { encoding: "utf8" });
+
+    const theirs = await this.readFolder(this.dir);
+    const changed: string[] = [];
+    const conflicts: string[] = [];
+    for (const path of [...new Set([...mine.keys(), ...theirs.keys()])].sort()) {
+      const ours = mine.get(path) ?? null;
+      const server = theirs.get(path) ?? null;
+      if (ours === server) continue;
+      let merged;
+      if (base) merged = mergeFile(path, base.get(path) ?? null, ours, server);
+      else if (ours === null) merged = { content: server }; // cannot tell a local delete from a new server file: keep it
+      else merged = mergeFile(path, null, ours, server);
+      if (merged.content !== server) await this.apply(path, merged.content);
+      if (merged.content !== ours) changed.push(path);
+      for (const extra of merged.extra ?? []) {
+        await this.apply(extra.path, extra.content);
+        changed.push(extra.path);
+      }
+      if (merged.conflict) conflicts.push(path);
+    }
+    this.dirty.clear();
+    await this.saveDirty();
+    const status = await git.statusMatrix({ ...this.base });
+    if (status.some(([, head, , stage]) => head !== stage)) {
+      await git.commit({ ...this.base, message: "Recover changes from this device", author: this.identity() });
+    }
+    await this.rmrf(aside);
+    return { changed, conflicts };
   }
 
   private async pullLocked(): Promise<{ changed: string[]; conflicts: string[] }> {
