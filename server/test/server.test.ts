@@ -159,6 +159,59 @@ describe("accounts", () => {
     expect(await signIn(`my-pc.tail1234.ts.net`, `https://evil.example`)).toBe(403);
   });
 
+  it("resets a forgotten password through the emailed link", async () => {
+    const acct = await signUp("Forgetful", "forgetful@example.com");
+    const { captureMail } = await import("../src/mail.js");
+    const sent: { to: string; text: string }[] = [];
+    captureMail((m) => void sent.push(m));
+    try {
+      expect((await call(null, "GET", "/api/config")).json.passwordReset).toBe(true);
+
+      // Same answer for an unknown email, and nothing sent.
+      const unknown = await call(null, "POST", "/api/auth/request-password-reset", {
+        email: "nobody@example.com",
+        redirectTo: `${BASE}/`,
+      });
+      expect(unknown.status).toBe(200);
+      expect(sent).toHaveLength(0);
+
+      const ask = await call(null, "POST", "/api/auth/request-password-reset", {
+        email: "forgetful@example.com",
+        redirectTo: `${BASE}/`,
+      });
+      expect(ask.status).toBe(200);
+      expect(sent).toHaveLength(1);
+      expect(sent[0].to).toBe("forgetful@example.com");
+      const link = sent[0].text.match(/https?:\/\/\S+/)![0];
+      expect(link.startsWith(`${BASE}/?reset=`)).toBe(true);
+      const token = new URL(link).searchParams.get("reset")!;
+
+      // Another site cannot ask for a link that points to it.
+      const evil = await call(null, "POST", "/api/auth/request-password-reset", {
+        email: "forgetful@example.com",
+        redirectTo: "https://evil.example/",
+      });
+      expect(evil.status).toBe(403);
+
+      const weak = await call(null, "POST", "/api/auth/reset-password", { token, newPassword: "short" });
+      expect(weak.status).toBe(400);
+
+      const reset = await call(null, "POST", "/api/auth/reset-password", { token, newPassword: "new-horse-8!" });
+      expect(reset.status, JSON.stringify(reset.json)).toBe(200);
+
+      // The old session is signed out, the old password stops working, the link is single-use.
+      expect((await call(acct, "GET", "/api/me")).status).toBe(401);
+      const signIn = (password: string) =>
+        call(null, "POST", "/api/auth/sign-in/email", { email: "forgetful@example.com", password });
+      expect((await signIn("correct-horse-7!")).status).toBe(401);
+      expect((await signIn("new-horse-8!")).status).toBe(200);
+      const again = await call(null, "POST", "/api/auth/reset-password", { token, newPassword: "other-horse-9!" });
+      expect(again.status).toBe(400);
+    } finally {
+      captureMail(null);
+    }
+  });
+
   it("requires a session for the API", async () => {
     expect((await call(null, "GET", "/api/me")).status).toBe(401);
   });

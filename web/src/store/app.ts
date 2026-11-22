@@ -220,6 +220,11 @@ export async function boot() {
   } catch {
     /* offline start is handled below */
   }
+  // A password reset link opens the reset form, even on a signed-in browser.
+  if (new URLSearchParams(window.location.search).has("reset")) {
+    set({ status: "signedOut" });
+    return;
+  }
   try {
     const data = await api<Me>("GET", "/api/me");
     localStorage.setItem("margin-session", JSON.stringify(data));

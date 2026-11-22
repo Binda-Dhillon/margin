@@ -6,6 +6,7 @@ import { auth, userFromHeaders, type SessionUser } from "./auth.js";
 import { config } from "./config.js";
 import { db, getUser, getUserByEmail, groupsForUser, isMember, memberIds, type GroupRow } from "./db.js";
 import { emitTo, subscribe, type ServerEvent } from "./events.js";
+import { mailEnabled } from "./mail.js";
 import { ensureRepo, hashToken, removeRepo } from "./git.js";
 
 const groupId = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 12);
@@ -21,6 +22,7 @@ api.get("/config", (c) =>
   c.json({
     providers: { google: !!config.google, microsoft: !!config.microsoft },
     allowSignup: config.allowSignup,
+    passwordReset: mailEnabled(),
     publicUrl: config.publicUrl,
   }),
 );

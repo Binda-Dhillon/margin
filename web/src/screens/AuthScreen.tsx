@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Circle, CircleCheck, Eye, EyeOff, GraduationCap, TriangleAlert } from "lucide-react";
+import { ArrowLeft, Check, Circle, CircleCheck, Eye, EyeOff, GraduationCap, MailCheck, TriangleAlert } from "lucide-react";
 import { authClient } from "../lib/api";
 import { boot, useApp } from "../store/app";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui";
@@ -62,19 +62,247 @@ function BrandPanel() {
   );
 }
 
+type Mode = "login" | "signup" | "forgot" | "reset";
+
+/** The token from a password reset link (`/?reset=<token>`), if this page was opened from one. */
+function resetToken(): string | null {
+  return new URLSearchParams(window.location.search).get("reset");
+}
+
+function clearResetFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  params.delete("reset");
+  const rest = params.toString();
+  window.history.replaceState(null, "", window.location.pathname + (rest ? `?${rest}` : ""));
+}
+
+function PasswordInput({
+  id,
+  value,
+  onChange,
+  autoComplete,
+  describedBy,
+  onCaps,
+}: {
+  id: string;
+  value: string;
+  onChange: (v: string) => void;
+  autoComplete: string;
+  describedBy?: string;
+  onCaps: (on: boolean) => void;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="relative">
+      <input
+        id={id}
+        className="input"
+        style={{ paddingRight: 86 }}
+        type={show ? "text" : "password"}
+        autoComplete={autoComplete}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => onCaps(e.getModifierState("CapsLock"))}
+        onKeyUp={(e) => onCaps(e.getModifierState("CapsLock"))}
+        aria-describedby={describedBy}
+      />
+      <button
+        type="button"
+        className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1.5 t12 font-semibold text-brand bg-transparent border-0 px-2 py-1 rounded-md"
+        onClick={() => setShow((v) => !v)}
+        aria-pressed={show}
+      >
+        {show ? <EyeOff size={15} /> : <Eye size={15} />}
+        {show ? "Hide" : "Show"}
+      </button>
+    </div>
+  );
+}
+
+function PasswordRules({ password }: { password: string }) {
+  return (
+    <>
+      {RULES.map((r) => {
+        const ok = r.test(password);
+        return (
+          <div key={r.label} className="flex items-center gap-2 mb-1" style={{ color: ok ? "var(--brand)" : "var(--muted)" }}>
+            {ok ? <CircleCheck size={14} /> : <Circle size={14} />}
+            {r.label}
+            <span className="sr-only">{ok ? "(met)" : "(not met yet)"}</span>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function Heading({ children }: { children: React.ReactNode }) {
+  return (
+    <h2 className="font-bold m-0 mb-3" style={{ fontSize: "calc(28px * var(--ts))", letterSpacing: "-0.3px" }}>
+      {children}
+    </h2>
+  );
+}
+
+function BackButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button type="button" className="flex items-center gap-1.5 t13 font-semibold text-brand bg-transparent border-0 p-0 mb-8" onClick={onClick}>
+      <ArrowLeft size={15} /> Back to log in
+    </button>
+  );
+}
+
+function ErrorBox({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="t13 mb-4 px-3 py-2.5 rounded-lg bg-danger-bg text-danger" role="alert">
+      {children}
+    </div>
+  );
+}
+
+function ForgotForm({ initialEmail, onBack }: { initialEmail: string; onBack: (email: string) => void }) {
+  const [email, setEmail] = useState(initialEmail);
+  const [busy, setBusy] = useState(false);
+  const [sentTo, setSentTo] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    const res = await authClient.requestPasswordReset({ email: email.trim(), redirectTo: window.location.origin + "/" });
+    setBusy(false);
+    if (res.error) {
+      setError(res.error.message ?? "Could not send the reset link. Try again.");
+      return;
+    }
+    setSentTo(email.trim());
+  };
+
+  if (sentTo) {
+    return (
+      <div className="w-full" style={{ maxWidth: 460 }}>
+        <BackButton onClick={() => onBack(sentTo)} />
+        <MailCheck size={32} className="text-brand mb-4" aria-hidden="true" />
+        <Heading>Check your email</Heading>
+        <p className="t15 text-muted m-0 mb-6" role="status">
+          If an account uses <strong className="text-ink">{sentTo}</strong>, a link to choose a new password is on its way. It works for one hour.
+        </p>
+        <p className="t13 text-muted m-0">
+          Nothing after a few minutes? Check your spam folder, or{" "}
+          <button type="button" className="font-semibold text-brand bg-transparent border-0 p-0" onClick={() => setSentTo(null)}>
+            send it again
+          </button>
+          .
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={submit} className="w-full" style={{ maxWidth: 460 }} noValidate>
+      <BackButton onClick={() => onBack(email)} />
+      <Heading>Reset your password</Heading>
+      <p className="t15 text-muted m-0 mb-6">Enter the email you signed up with and we will send you a link to choose a new password.</p>
+      <div className="mb-5">
+        <label className="field-label" htmlFor="forgot-email">
+          University email
+        </label>
+        <input id="forgot-email" className="input" type="email" autoComplete="email" autoFocus value={email} onChange={(e) => setEmail(e.target.value)} />
+      </div>
+      {error ? <ErrorBox>{error}</ErrorBox> : null}
+      <button type="submit" className="btn btn-primary btn-lg w-full" disabled={!email.trim() || busy}>
+        {busy ? "One moment…" : "Send reset link"}
+      </button>
+    </form>
+  );
+}
+
+function ResetForm({ onDone, onRestart }: { onDone: () => void; onRestart: () => void }) {
+  const [password, setPassword] = useState("");
+  const [caps, setCaps] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [expired, setExpired] = useState(false);
+  const rulesOk = RULES.every((r) => r.test(password));
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const token = resetToken();
+    if (!rulesOk || busy) return;
+    if (!token) {
+      setExpired(true);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    const res = await authClient.resetPassword({ newPassword: password, token });
+    setBusy(false);
+    if (res.error) {
+      if (res.error.code === "INVALID_TOKEN") setExpired(true);
+      else setError(res.error.message ?? "Could not change the password. Try again.");
+      return;
+    }
+    onDone();
+  };
+
+  if (expired) {
+    return (
+      <div className="w-full" style={{ maxWidth: 460 }}>
+        <Heading>This link has expired</Heading>
+        <p className="t15 text-muted m-0 mb-6">Reset links work once, for one hour. Ask for a new one and use the newest email.</p>
+        <button type="button" className="btn btn-primary btn-lg w-full" onClick={onRestart}>
+          Send a new link
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={submit} className="w-full" style={{ maxWidth: 460 }} noValidate>
+      <Heading>Choose a new password</Heading>
+      <p className="t15 text-muted m-0 mb-6">You will be signed out everywhere else, then you can log in with the new password.</p>
+      <div className="mb-2">
+        <label className="field-label" htmlFor="reset-password">
+          New password
+        </label>
+        <PasswordInput id="reset-password" value={password} onChange={setPassword} autoComplete="new-password" describedBy="reset-rules" onCaps={setCaps} />
+      </div>
+      <div id="reset-rules" className="t12 mb-5">
+        {caps ? (
+          <div className="flex items-center gap-2 mb-1.5" style={{ color: "var(--warn-ink)" }} role="status">
+            <TriangleAlert size={14} /> Caps Lock is on
+          </div>
+        ) : null}
+        <PasswordRules password={password} />
+      </div>
+      {error ? <ErrorBox>{error}</ErrorBox> : null}
+      <button type="submit" className="btn btn-primary btn-lg w-full" disabled={!rulesOk || busy}>
+        {busy ? "One moment…" : "Save new password"}
+      </button>
+    </form>
+  );
+}
+
 export function AuthScreen() {
   const config = useApp((s) => s.config);
-  const [mode, setMode] = useState<"login" | "signup">("signup");
+  const [mode, setModeState] = useState<Mode>(() => (resetToken() ? "reset" : "signup"));
+  const [notice, setNotice] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [show, setShow] = useState(false);
   const [caps, setCaps] = useState(false);
   const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const signup = mode === "signup";
+  const setMode = (m: Mode) => {
+    setModeState(m);
+    setError(null);
+    setNotice(null);
+  };
   const providers = [
     ...(config?.providers.microsoft ? [{ id: "microsoft" as const, label: "Microsoft" }] : []),
     ...(config?.providers.google ? [{ id: "google" as const, label: "Google" }] : []),
@@ -121,6 +349,28 @@ export function AuthScreen() {
         <div className="lg:hidden mb-8 self-center">
           <Logo />
         </div>
+        {mode === "forgot" ? (
+          <ForgotForm
+            initialEmail={email}
+            onBack={(typed) => {
+              if (typed) setEmail(typed);
+              setMode("login");
+            }}
+          />
+        ) : mode === "reset" ? (
+          <ResetForm
+            onDone={() => {
+              clearResetFromUrl();
+              setMode("login");
+              setPassword("");
+              setNotice("Password changed. Log in with your new password.");
+            }}
+            onRestart={() => {
+              clearResetFromUrl();
+              setMode("forgot");
+            }}
+          />
+        ) : (
         <form onSubmit={submit} className="w-full" style={{ maxWidth: 460 }} noValidate>
           <div role="tablist" aria-label="Log in or sign up" className="flex gap-7 border-b border-line mb-9">
             {(["login", "signup"] as const).map((m) => (
@@ -131,10 +381,7 @@ export function AuthScreen() {
                 aria-selected={mode === m}
                 className="t15 font-medium pb-3 -mb-px bg-transparent border-0 border-b-2"
                 style={{ color: mode === m ? "var(--brand)" : "var(--muted)", borderBottomColor: mode === m ? "var(--brand)" : "transparent", borderBottomStyle: "solid" }}
-                onClick={() => {
-                  setMode(m);
-                  setError(null);
-                }}
+                onClick={() => setMode(m)}
               >
                 {m === "login" ? "Log in" : "Sign up"}
               </button>
@@ -187,32 +434,24 @@ export function AuthScreen() {
           </div>
 
           <div className="mb-2">
-            <label className="field-label" htmlFor="auth-password">
-              Password
-            </label>
-            <div className="relative">
-              <input
-                id="auth-password"
-                className="input"
-                style={{ paddingRight: 86 }}
-                type={show ? "text" : "password"}
-                autoComplete={signup ? "new-password" : "current-password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                onKeyDown={(e) => setCaps(e.getModifierState("CapsLock"))}
-                onKeyUp={(e) => setCaps(e.getModifierState("CapsLock"))}
-                aria-describedby="auth-rules"
-              />
-              <button
-                type="button"
-                className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1.5 t12 font-semibold text-brand bg-transparent border-0 px-2 py-1 rounded-md"
-                onClick={() => setShow((v) => !v)}
-                aria-pressed={show}
-              >
-                {show ? <EyeOff size={15} /> : <Eye size={15} />}
-                {show ? "Hide" : "Show"}
-              </button>
+            <div className="flex items-baseline justify-between gap-3">
+              <label className="field-label" htmlFor="auth-password">
+                Password
+              </label>
+              {!signup && config?.passwordReset ? (
+                <button type="button" className="t12 font-semibold text-brand bg-transparent border-0 p-0" style={{ marginBottom: 6 }} onClick={() => setMode("forgot")}>
+                  Forgot password?
+                </button>
+              ) : null}
             </div>
+            <PasswordInput
+              id="auth-password"
+              value={password}
+              onChange={setPassword}
+              autoComplete={signup ? "new-password" : "current-password"}
+              describedBy="auth-rules"
+              onCaps={setCaps}
+            />
           </div>
 
           <div id="auth-rules" className="t12 mb-4" style={{ minHeight: signup ? 78 : 0 }}>
@@ -221,18 +460,7 @@ export function AuthScreen() {
                 <TriangleAlert size={14} /> Caps Lock is on
               </div>
             ) : null}
-            {signup
-              ? RULES.map((r) => {
-                  const ok = r.test(password);
-                  return (
-                    <div key={r.label} className="flex items-center gap-2 mb-1" style={{ color: ok ? "var(--brand)" : "var(--muted)" }}>
-                      {ok ? <CircleCheck size={14} /> : <Circle size={14} />}
-                      {r.label}
-                      <span className="sr-only">{ok ? "(met)" : "(not met yet)"}</span>
-                    </div>
-                  );
-                })
-              : null}
+            {signup ? <PasswordRules password={password} /> : null}
           </div>
 
           <label className="flex items-center gap-2.5 t13 mb-5 cursor-pointer select-none">
@@ -246,11 +474,12 @@ export function AuthScreen() {
             Keep me signed in on this device
           </label>
 
-          {error ? (
-            <div className="t13 mb-4 px-3 py-2.5 rounded-lg bg-danger-bg text-danger" role="alert">
-              {error}
+          {notice ? (
+            <div className="t13 mb-4 px-3 py-2.5 rounded-lg" style={{ background: "var(--brand-tint)", color: "var(--ink)" }} role="status">
+              {notice}
             </div>
           ) : null}
+          {error ? <ErrorBox>{error}</ErrorBox> : null}
 
           <button type="submit" className="btn btn-primary btn-lg w-full" disabled={!canSubmit}>
             {busy ? "One moment…" : signup ? "Create account" : "Log in"}
@@ -264,6 +493,7 @@ export function AuthScreen() {
           </p>
           {signup && config && !config.allowSignup ? <p className="t12 text-muted mt-3">New sign-ups are switched off on this server. Ask whoever runs it for an account.</p> : null}
         </form>
+        )}
       </main>
     </div>
   );

@@ -3,6 +3,7 @@ import { APIError, createAuthMiddleware } from "better-auth/api";
 import { getMigrations } from "better-auth/db/migration";
 import { config } from "./config.js";
 import { db } from "./db.js";
+import { escapeHtml, mailEnabled, sendMail } from "./mail.js";
 
 /** Same rules the sign-up form shows live (Screen 1). */
 export function passwordProblems(password: string): string[] {
@@ -35,6 +36,20 @@ function sameOrigins(request?: Request): string[] {
     .flatMap((h) => [`http://${h}`, `https://${h}`]);
 }
 
+/** `<redirectTo>?reset=<token>`, falling back to PUBLIC_URL. */
+function resetLink(url: string, token: string): string {
+  let target = `${config.publicUrl}/`;
+  try {
+    const callback = new URL(url).searchParams.get("callbackURL");
+    if (callback && /^https?:\/\//.test(callback)) target = callback;
+  } catch {
+    /* keep the fallback */
+  }
+  const link = new URL(target);
+  link.searchParams.set("reset", token);
+  return link.toString();
+}
+
 let migrated = false;
 
 export const auth = betterAuth({
@@ -58,6 +73,40 @@ export const auth = betterAuth({
     minPasswordLength: 8,
     autoSignIn: true,
     disableSignUp: !config.allowSignup,
+    resetPasswordTokenExpiresIn: 60 * 60,
+    revokeSessionsOnPasswordReset: true,
+    sendResetPassword: async ({ user, url, token }) => {
+      // The link opens the app on the address the request came from (checked
+      // against trusted origins by Better Auth), so a reset asked for on the
+      // laptop links back to the laptop's address for this server.
+      const link = resetLink(url, token);
+      if (!mailEnabled()) {
+        console.warn(`[auth] Password reset asked for ${user.email}, but SMTP is not set up.`);
+        return;
+      }
+      try {
+        await sendMail({
+          to: user.email,
+          subject: "Reset your Margin password",
+          text: [
+            `Hi ${user.name},`,
+            "",
+            "Someone asked to reset the password for your Margin account. Open this link within an hour to choose a new one:",
+            "",
+            link,
+            "",
+            "If that was not you, ignore this email. Your password stays the same.",
+          ].join("\n"),
+          html: `<p>Hi ${escapeHtml(user.name)},</p>
+<p>Someone asked to reset the password for your Margin account. Open this link within an hour to choose a new one:</p>
+<p><a href="${escapeHtml(link)}">Choose a new password</a></p>
+<p>If that was not you, ignore this email. Your password stays the same.</p>`,
+        });
+      } catch (err) {
+        // Answer the same either way, so the form never reveals which emails have accounts.
+        console.error(`[auth] Could not send the password reset email to ${user.email}:`, err);
+      }
+    },
   },
   socialProviders: socialProviders as never,
   account: {

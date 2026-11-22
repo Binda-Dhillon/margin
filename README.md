@@ -69,7 +69,8 @@ docker compose up -d --build
 
 ## Configuration
 
-Environment variables, all optional. See `.env.example`.
+Environment variables, all optional. Put them in `.env` at the project root
+(`npm start` and Docker Compose both read it). See `.env.example`.
 
 | Variable | Purpose |
 |---|---|
@@ -80,9 +81,14 @@ Environment variables, all optional. See `.env.example`.
 | `ALLOW_SIGNUP` | `false` stops new accounts. |
 | `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`, `MICROSOFT_TENANT_ID` | Enables "Continue with university account" through Microsoft. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | The same through Google. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Sends "Forgot password?" emails. The option is hidden until `SMTP_HOST` is set. `SMTP_SECURE=true` forces TLS from the start (default only on port 465). |
 
 OAuth redirect URIs to register: `<PUBLIC_URL>/api/auth/callback/microsoft`
 and `<PUBLIC_URL>/api/auth/callback/google`.
+
+Password reset links are valid for one hour, work once, and sign the account
+out of every other device. The link opens on the same address the request was
+made from, so a reset asked for over Tailscale links back over Tailscale.
 
 Serve it over HTTPS (a reverse proxy such as Caddy in front) for anything
 beyond your own machine.

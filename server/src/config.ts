@@ -5,6 +5,12 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+// `npm start` does not read .env by itself (Docker Compose does). Load the one
+// at the project root so the same file works both ways. Variables already set
+// in the environment win. Tests set their own.
+const envFile = path.resolve(here, "..", "..", ".env");
+if (!process.env.VITEST && fs.existsSync(envFile)) process.loadEnvFile(envFile);
+
 function env(name: string): string | undefined {
   const v = process.env[name];
   return v && v.trim() !== "" ? v.trim() : undefined;
@@ -50,6 +56,18 @@ export const config = {
           tenantId: env("MICROSOFT_TENANT_ID") ?? "common",
         }
       : null,
+  /** Outgoing mail, used for password reset links. Off unless SMTP_HOST is set. */
+  smtp: env("SMTP_HOST")
+    ? {
+        host: env("SMTP_HOST")!,
+        port: Number(env("SMTP_PORT") ?? 587),
+        // Port 465 speaks TLS from the start; 587 and 25 upgrade with STARTTLS.
+        secure: env("SMTP_SECURE") ? env("SMTP_SECURE") === "true" : Number(env("SMTP_PORT") ?? 587) === 465,
+        user: env("SMTP_USER"),
+        pass: env("SMTP_PASS"),
+        from: env("SMTP_FROM") ?? env("SMTP_USER") ?? "margin@localhost",
+      }
+    : null,
   /** Extra origins allowed to call the API with cookies (the Vite dev server). */
   trustedOrigins: (env("TRUSTED_ORIGINS") ?? "http://localhost:5173")
     .split(",")

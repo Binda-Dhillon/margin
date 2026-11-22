@@ -63,5 +63,7 @@ export interface Me {
 export interface ServerConfig {
   providers: { google: boolean; microsoft: boolean };
   allowSignup: boolean;
+  /** The server can email password reset links. */
+  passwordReset?: boolean;
   publicUrl: string;
 }
